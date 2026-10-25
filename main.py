@@ -6,7 +6,6 @@ import httpx
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, Header, HTTPException, Depends, Request, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
 app = FastAPI()
 
@@ -217,3 +216,4 @@ async def message_send(
             "batchId": batch_id,
             "artifacts": [{
                 "mediaType": "application/vnd.ga5.invoice-action-proposals+json",
+                "data": {
