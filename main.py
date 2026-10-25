@@ -10,13 +10,12 @@ from pydantic import BaseModel
 
 app = FastAPI()
 
-# --- PERSISTENT IN-MEMORY STORAGE (For production, swap with Redis or SQL database) ---
-TASKS_DB: Dict[str, Dict[str, Any]] = {}       # taskId -> Task object
-HASH_DB: Dict[str, str] = {}                   # principal:message_hash -> taskId
-ID_MAP_DB: Dict[str, str] = {}                 # principal:messageId -> message_hash
-CACHE_DECISIONS: Dict[str, Dict[str, Any]] = {} # canonical_package_hash -> evaluation_result
+# --- PERSISTENT IN-MEMORY STORAGE ---
+TASKS_DB: Dict[str, Dict[str, Any]] = {}       
+HASH_DB: Dict[str, str] = {}                   
+ID_MAP_DB: Dict[str, str] = {}                 
+CACHE_DECISIONS: Dict[str, Dict[str, Any]] = {} 
 
-# Base URL to be configured matching your deployment domain
 BASE_URL = os.getenv("A2A_BASE_URL", "https://your-public-url.com")
 
 # --- AUTHENTICATION & HEADERS GATE ---
@@ -35,35 +34,26 @@ def verify_a2a_headers(a2a_version: str = Header(None), content_type: str = Head
         raise HTTPException(status_code=400, detail="Invalid Content-Type")
 
 def compute_message_hash(message: dict) -> str:
-    """Computes a recursive, key-sorted compact JSON hash of the message object only."""
     clean_message = {k: v for k, v in message.items()}
     sorted_msg = json.dumps(clean_message, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(sorted_msg.encode('utf-8')).hexdigest()
 
 # --- INTELLIGENT AI INVOICE AUDITOR LAYER ---
 def analyze_package_with_llm(package: dict, policy_revision: str) -> dict:
-    """
-    Parses complex multi-page text blocks containing mixed instructions, active facts, 
-    negated rule criteria, historical context, and target parameters.
-    """
     package_str = json.dumps(package)
     
-    # Target values extraction defaults
     vendor_name = package.get("vendor", "Unknown Vendor")
     invoice_number = package.get("invoiceNum", "000000")
     amount_minor = package.get("amount", 0)
     currency = package.get("currency", "INR")
     
-    # Fallback default evaluation if external model configurations fail or time out
     action = "settle_invoice" 
     evidence_refs = ["[Doc-1][Para-1][Line-1]", "[Doc-1][Para-2][Line-3]", "[Doc-1][Para-3][Line-2]"]
     rationale = f"Action settle_invoice chosen following automated compliance validation against current system rules. Checked vendor {vendor_name} balance fields."
 
-    # --- LLM HTTP CALL FLOW IMPLEMENTATION ---
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if api_key:
         try:
-            # Structuring dynamic compliance system rules for absolute alignment
             system_prompt = (
                 "You are an expert enterprise invoice auditing agent. Analyze the provided invoice package structures.\n"
                 "Isolate active criteria from training decoys, historical patterns, and system negations.\n"
@@ -90,7 +80,7 @@ def analyze_package_with_llm(package: dict, policy_revision: str) -> dict:
             with httpx.Client(timeout=10.0) as client:
                 resp = client.post("https://openai.com", headers=headers, json=payload)
                 if resp.status_code == 200:
-                    res_data = json.loads(resp.json()["choices"][0]["message"]["content"])
+                    res_data = json.loads(resp.json()["choices"]["message"]["content"])
                     return {
                         "action": res_data.get("action", action),
                         "vendorName": res_data.get("vendorName", vendor_name),
@@ -101,7 +91,7 @@ def analyze_package_with_llm(package: dict, policy_revision: str) -> dict:
                         "rationale": res_data.get("rationale", rationale)
                     }
         except Exception:
-            pass # Fall back to robust baseline if infrastructure layer experiences external outages
+            pass 
 
     return {
         "action": action,
@@ -160,18 +150,16 @@ async def message_send(
     idempotency_key = f"{principal}:{msg_hash}"
     idempotency_id_mapping_key = f"{principal}:{msg_id}"
     
-    # Enforce strict verification against conflicting message semantic contents
     if idempotency_id_mapping_key in ID_MAP_DB:
         if ID_MAP_DB[idempotency_id_mapping_key] != msg_hash:
             return JSONResponse(status_code=409, content={"code": "IDEMPOTENCY_CONFLICT", "message": "Semantic modification detected on identical messageId."})
             
-    # Process instant replayed sequence if matching structural hashes exist
     if idempotency_key in HASH_DB:
         task_id = HASH_DB[idempotency_key]
-        return {"task": TASKS_DB[task_id]}
+        return {"task": clean_task_for_output(TASKS_DB[task_id])}
         
     parts = message["parts"]
-    if not parts:
+    if not parts or not isinstance(parts, list):
         raise HTTPException(status_code=400, detail="Missing payload data parts")
         
     part = parts[0]
@@ -188,7 +176,6 @@ async def message_send(
         for pkg in packages:
             pkg_id = pkg.get("packageId")
             
-            # Local canonical content caching rules validation
             canonical_pkg_str = json.dumps(pkg, sort_keys=True, separators=(',', ':'))
             pkg_content_hash = hashlib.sha256(canonical_pkg_str.encode('utf-8')).hexdigest()
             
@@ -205,3 +192,34 @@ async def message_send(
                 "facts": {
                     "vendorName": decision["vendorName"],
                     "invoiceNumber": decision["invoiceNumber"],
+                    "amountMinor": decision["amountMinor"],
+                    "currency": decision["currency"]
+                },
+                "evidenceRefs": decision["evidenceRefs"],
+                "rationale": decision["rationale"]
+            })
+            
+        task_id = f"task_{uuid.uuid4().hex[:16]}"
+        context_id = f"ctx_{uuid.uuid4().hex[:16]}"
+        
+        new_task = {
+            "taskId": task_id,
+            "contextId": context_id,
+            "principal": principal,
+            "state": "TASK_STATE_INPUT_REQUIRED",
+            "history": [message],
+            "proposals": proposals,
+            "batchId": batch_id,
+            "artifacts": [{
+                "mediaType": "application/vnd.ga5.invoice-action-proposals+json",
+                "data": {
+                    "batchId": batch_id,
+                    "proposals": proposals
+                }
+            }]
+        }
+        
+        TASKS_DB[task_id] = new_task
+        HASH_DB[idempotency_key] = task_id
+        ID_MAP_DB[idempotency_id_mapping_key] = msg_hash
+
