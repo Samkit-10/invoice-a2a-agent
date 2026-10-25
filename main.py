@@ -16,7 +16,8 @@ HASH_DB: Dict[str, str] = {}
 ID_MAP_DB: Dict[str, str] = {}                 
 CACHE_DECISIONS: Dict[str, Dict[str, Any]] = {} 
 
-BASE_URL = os.getenv("A2A_BASE_URL", "https://your-public-url.com")
+# Set base URL to match your main root domain directly
+BASE_URL = os.getenv("A2A_BASE_URL", "https://onrender.com")
 
 # --- AUTHENTICATION & HEADERS GATE ---
 def get_auth_principal(authorization: Optional[str] = Header(None)) -> str:
@@ -133,7 +134,7 @@ def get_agent_card():
     }
 
 # --- 2. POST ROUTE: /message:send ---
-@app.post("/a2a/message:send")
+@app.post("/message:send")
 async def message_send(
     request: Request,
     principal: str = Depends(get_auth_principal),
@@ -221,5 +222,5 @@ async def message_send(
         
         TASKS_DB[task_id] = new_task
         HASH_DB[idempotency_key] = task_id
-        ID_MAP_DB[idempotency_id_mapping_key] = msg_hash
+
 
