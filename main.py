@@ -11,11 +11,10 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 app = FastAPI()
 
-# --- FORCE GLOBAL APPLICATION/A2A+JSON MEDIA TYPE ---
+# --- FORCE GLOBAL APPLICATION/A2A+JSON MEDIA TYPE RESPONSES ---
 class A2AJSONResponse(JSONResponse):
     media_type = "application/a2a+json"
 
-# Override global exceptions to enforce the exact required header format everywhere
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     return A2AJSONResponse(
@@ -30,7 +29,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={"message": "Malformed schema structure parameters", "details": exc.errors()}
     )
 
-# --- PERSISTENT STATE TABLES ---
+# --- PERSISTENT STATE STORAGE MANAGEMENT ---
 TASKS_DB: Dict[str, Dict[str, Any]] = {}       
 HASH_DB: Dict[str, str] = {}                   
 ID_MAP_DB: Dict[str, str] = {}                 
@@ -38,27 +37,31 @@ CACHE_DECISIONS: Dict[str, Dict[str, Any]] = {}
 
 BASE_URL = os.getenv("A2A_BASE_URL", "https://invoice-a2a-agent-2.onrender.com")
 
-# --- AUTHENTICATION & HEADERS GATEWAY ---
+# --- RESILIENT AUTHENTICATION & HEADER CONTRACT VALIDATION ---
 def get_auth_principal(authorization: Optional[str] = Header(None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
-    token = authorization.split(" ")[1].strip()
+    token = authorization[7:].strip()
     if not token:
         raise HTTPException(status_code=401, detail="Invalid token value")
     return token
 
-def verify_a2a_headers(a2a_version: str = Header(None), content_type: str = Header(None)):
+def verify_a2a_headers(
+    a2a_version: Optional[str] = Header(None, alias="A2A-Version"), 
+    content_type: Optional[str] = Header(None, alias="Content-Type")
+):
     if a2a_version != "1.0":
         raise HTTPException(status_code=400, detail="Invalid or missing A2A-Version")
     if content_type and "application/a2a+json" not in content_type:
         raise HTTPException(status_code=400, detail="Invalid Content-Type")
 
 def compute_message_hash(message: dict) -> str:
+    """Computes a strict, key-sorted compact JSON hash of the message object only."""
     clean_message = {k: v for k, v in message.items()}
     sorted_msg = json.dumps(clean_message, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(sorted_msg.encode('utf-8')).hexdigest()
 
-# --- INTELLIGENT AI INVOICE AUDITOR LAYER ---
+# --- INTELLIGENT COMPLIANCE AI ROUTING LAYER ---
 def analyze_package_with_llm(package: dict, policy_revision: str) -> dict:
     package_str = json.dumps(package)
     
@@ -74,42 +77,56 @@ def analyze_package_with_llm(package: dict, policy_revision: str) -> dict:
     api_key = os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
     if api_key:
         try:
-            system_prompt = (
-                "You are an expert enterprise invoice auditing agent. Analyze the provided invoice package structures.\n"
-                "Isolate active criteria from training decoys, historical patterns, and system negations.\n"
-                "Classify the document context into exactly one valid transaction action status:\n"
-                "- settle_invoice: Valid invoice within autonomous delegated limits.\n"
-                "- request_approval: Commercially authentic invoice exceeding default thresholds.\n"
-                "- hold_invoice: Suspends processing due to validation/verification flags.\n"
-                "- reject_duplicate: Detected identical parameters matching an already finalized record.\n"
-                "- open_exception: Data mapping failure or record dispute requiring workflow routing.\n"
-                "Return valid JSON containing keys: 'action', 'vendorName', 'invoiceNumber', 'amountMinor', 'currency', 'evidenceRefs' (exactly 3 bracketed citations), and 'rationale' (60-1500 chars citing refs)."
-            )
-            
-            headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-            payload = {
-                "model": "gpt-4o-mini",
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Policy Revision: {policy_revision}\nData: {package_str}"}
-                ],
-                "response_format": {"type": "json_object"},
-                "temperature": 0.0
-            }
-            
-            with httpx.Client(timeout=10.0) as client:
-                resp = client.post("https://openai.com", headers=headers, json=payload)
-                if resp.status_code == 200:
-                    res_data = json.loads(resp.json()["choices"]["message"]["content"])
-                    return {
-                        "action": res_data.get("action", action),
-                        "vendorName": res_data.get("vendorName", vendor_name),
-                        "invoiceNumber": res_data.get("invoiceNumber", invoice_number),
-                        "amountMinor": int(res_data.get("amountMinor", amount_minor)),
-                        "currency": res_data.get("currency", currency),
-                        "evidenceRefs": res_data.get("evidenceRefs", evidence_refs)[:3],
-                        "rationale": res_data.get("rationale", rationale)
+            if os.getenv("OPENAI_API_KEY"):
+                headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+                payload = {
+                    "model": "gpt-4o-mini",
+                    "messages": [
+                        {"role": "system", "content": "You are a strict financial auditor agent. Classify the invoice package into exactly one valid action: settle_invoice, request_approval, hold_invoice, reject_duplicate, open_exception. Return a JSON object with keys: action, vendorName, invoiceNumber, amountMinor, currency, evidenceRefs (array of exactly 3 bracketed references from text), rationale (60-1500 chars)."},
+                        {"role": "user", "content": f"Policy Revision: {policy_revision}\nData: {package_str}"}
+                    ],
+                    "response_format": {"type": "json_object"},
+                    "temperature": 0.0
+                }
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.post("https://openai.com", headers=headers, json=payload)
+                    if resp.status_code == 200:
+                        res_data = json.loads(resp.json()["choices"]["message"]["content"])
+                        return {
+                            "action": res_data.get("action", action),
+                            "vendorName": res_data.get("vendorName", vendor_name),
+                            "invoiceNumber": res_data.get("invoiceNumber", invoice_number),
+                            "amountMinor": int(res_data.get("amountMinor", amount_minor)),
+                            "currency": res_data.get("currency", currency),
+                            "evidenceRefs": res_data.get("evidenceRefs", evidence_refs)[:3],
+                            "rationale": res_data.get("rationale", rationale)
+                        }
+            elif os.getenv("GEMINI_API_KEY"):
+                url = f"https://googleapis.com{api_key}"
+                headers = {"Content-Type": "application/json"}
+                payload = {
+                    "contents": [{
+                        "parts": [{"text": f"You are a strict financial auditor agent. Classify the invoice package into exactly one valid action: settle_invoice, request_approval, hold_invoice, reject_duplicate, open_exception. Return a JSON object with keys: action, vendorName, invoiceNumber, amountMinor, currency, evidenceRefs (array of exactly 3 bracketed references from text), rationale (60-1500 chars).\n\nPolicy Revision: {policy_revision}\nData: {package_str}"}]
+                    }],
+                    "generationConfig": {
+                        "responseMimeType": "application/json",
+                        "temperature": 0.0
                     }
+                }
+                with httpx.Client(timeout=10.0) as client:
+                    resp = client.post(url, headers=headers, json=payload)
+                    if resp.status_code == 200:
+                        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                        res_data = json.loads(text)
+                        return {
+                            "action": res_data.get("action", action),
+                            "vendorName": res_data.get("vendorName", vendor_name),
+                            "invoiceNumber": res_data.get("invoiceNumber", invoice_number),
+                            "amountMinor": int(res_data.get("amountMinor", amount_minor)),
+                            "currency": res_data.get("currency", currency),
+                            "evidenceRefs": res_data.get("evidenceRefs", evidence_refs)[:3],
+                            "rationale": res_data.get("rationale", rationale)
+                        }
         except Exception:
             pass 
 
@@ -126,7 +143,7 @@ def analyze_package_with_llm(package: dict, policy_revision: str) -> dict:
 # --- 1. GET DISCOVERY PATH: AGENT CARD ---
 @app.get("/.well-known/agent-card.json", response_class=A2AJSONResponse)
 def get_agent_card():
-    return {
+    return A2AJSONResponse(content={
         "name": "A2A Stateful Invoice Compliance Agent",
         "description": "Enterprise grade batch processing and validation agent executing strict transactional safety guarantees.",
         "version": "1.0",
@@ -150,7 +167,7 @@ def get_agent_card():
             "application/vnd.ga5.invoice-action-proposals+json",
             "application/vnd.ga5.invoice-action-receipts+json"
         ]
-    }
+    })
 
 # --- 2. POST ROUTE: /message:send ---
 @app.post("/message:send", response_class=A2AJSONResponse)
@@ -176,42 +193,6 @@ async def message_send(
             
     if idempotency_key in HASH_DB:
         task_id = HASH_DB[idempotency_key]
-        return clean_task_for_output(TASKS_DB[task_id])
+        return A2AJSONResponse(content=clean_task_for_output(TASKS_DB[task_id]))
         
     parts = message["parts"]
-    if not parts or not isinstance(parts, list) or len(parts) == 0:
-        raise HTTPException(status_code=400, detail="Missing payload data parts")
-        
-    part = parts[0]
-    media_type = part.get("mediaType")
-    data = part.get("data", {})
-    
-    # PHASE A: INITIAL INVOICE BATCH DISCOVERY
-    if media_type == "application/vnd.ga5.invoice-claim-batch+json":
-        batch_id = data.get("batchId")
-        policy_revision = data.get("policyRevision", "1.0")
-        packages = data.get("packages", [])
-        
-        proposals = []
-        for pkg in packages:
-            pkg_id = pkg.get("packageId")
-            
-            canonical_pkg_str = json.dumps(pkg, sort_keys=True, separators=(',', ':'))
-            pkg_content_hash = hashlib.sha256(canonical_pkg_str.encode('utf-8')).hexdigest()
-            
-            if pkg_content_hash in CACHE_DECISIONS:
-                decision = CACHE_DECISIONS[pkg_content_hash]
-            else:
-                decision = analyze_package_with_llm(pkg, policy_revision)
-                CACHE_DECISIONS[pkg_content_hash] = decision
-                
-            proposals.append({
-                "packageId": pkg_id,
-                "actionId": f"act_{uuid.uuid4().hex[:12]}",
-                "action": decision["action"],
-                "facts": {
-                    "vendorName": decision["vendorName"],
-                    "invoiceNumber": decision["invoiceNumber"],
-                    "amountMinor": decision["amountMinor"],
-                    "currency": decision["currency"]
-                },
