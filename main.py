@@ -6,23 +6,39 @@ import httpx
 from typing import List, Dict, Any, Optional
 from fastapi import FastAPI, Header, HTTPException, Depends, Request, status
 from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 app = FastAPI()
 
-# --- CUSTOM A2A MEDIA TYPE RESPONSE LAYER ---
+# --- FORCE GLOBAL APPLICATION/A2A+JSON MEDIA TYPE ---
 class A2AJSONResponse(JSONResponse):
-    """Enforces the mandatory application/a2a+json Content-Type required by the grader."""
     media_type = "application/a2a+json"
 
-# --- PERSISTENT IN-MEMORY STORAGE ---
+# Override global exceptions to enforce the exact required header format everywhere
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return A2AJSONResponse(
+        status_code=exc.status_code,
+        content={"message": str(exc.detail)}
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return A2AJSONResponse(
+        status_code=400,
+        content={"message": "Malformed schema structure parameters", "details": exc.errors()}
+    )
+
+# --- PERSISTENT STATE TABLES ---
 TASKS_DB: Dict[str, Dict[str, Any]] = {}       
 HASH_DB: Dict[str, str] = {}                   
 ID_MAP_DB: Dict[str, str] = {}                 
 CACHE_DECISIONS: Dict[str, Dict[str, Any]] = {} 
 
-BASE_URL = os.getenv("A2A_BASE_URL", "https://onrender.com")
+BASE_URL = os.getenv("A2A_BASE_URL", "https://invoice-a2a-agent-2.onrender.com")
 
-# --- AUTHENTICATION & HEADERS GATE ---
+# --- AUTHENTICATION & HEADERS GATEWAY ---
 def get_auth_principal(authorization: Optional[str] = Header(None)) -> str:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
@@ -199,21 +215,3 @@ async def message_send(
                     "amountMinor": decision["amountMinor"],
                     "currency": decision["currency"]
                 },
-                "evidenceRefs": decision["evidenceRefs"],
-                "rationale": decision["rationale"]
-            })
-            
-        task_id = f"task_{uuid.uuid4().hex[:16]}"
-        context_id = f"ctx_{uuid.uuid4().hex[:16]}"
-        
-        new_task = {
-            "taskId": task_id,
-            "contextId": context_id,
-            "principal": principal,
-            "state": "TASK_STATE_INPUT_REQUIRED",
-            "history": [message],
-            "proposals": proposals,
-            "batchId": batch_id,
-            "artifacts": [{
-                "mediaType": "application/vnd.ga5.invoice-action-proposals+json",
-                "data": {
