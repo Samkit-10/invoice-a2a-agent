@@ -123,7 +123,7 @@ def analyze_package_with_llm(package: dict, policy_revision: str) -> dict:
                 with httpx.Client(timeout=10.0) as client:
                     resp = client.post(url, headers=headers, json=payload)
                     if resp.status_code == 200:
-                        text = resp.json()["candidates"]["content"]["parts"]["text"]
+                        text = resp.json()["candidates"]["content"]["parts"][0]["text"]
                         res_data = json.loads(text)
                         return {
                             "action": res_data.get("action", action),
