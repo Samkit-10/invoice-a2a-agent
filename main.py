@@ -26,7 +26,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     return A2AJSONResponse(
         status_code=400,
-        content={"message": "Malformed schema structure parameters", "details": exc.errors()}
+        content={"message": "Malformed schema structure parameters"}
     )
 
 # --- PERSISTENT STATE STORAGE MANAGEMENT ---
@@ -35,25 +35,32 @@ HASH_DB: Dict[str, str] = {}
 ID_MAP_DB: Dict[str, str] = {}                 
 CACHE_DECISIONS: Dict[str, Dict[str, Any]] = {} 
 
-BASE_URL = os.getenv("A2A_BASE_URL", "https://invoice-a2a-agent-2.onrender.com")
+# Base URL configured to match your exact deployment domain
+BASE_URL = "https://invoice-a2a-agent-075m.onrender.com"
 
 # --- RESILIENT AUTHENTICATION & HEADER CONTRACT VALIDATION ---
-def get_auth_principal(authorization: Optional[str] = Header(None)) -> str:
+async def verify_a2a_headers_and_auth(request: Request):
+    headers = request.headers
+    a2a_version = headers.get("A2A-Version")
+    content_type = headers.get("Content-Type")
+    authorization = headers.get("Authorization")
+    
+    # 1. Check A2A Version Requirement
+    if not a2a_version or a2a_version != "1.0":
+        raise HTTPException(status_code=400, detail="Invalid or missing A2A-Version")
+        
+    # 2. Check Authentication Token Profile
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
     token = authorization[7:].strip()
     if not token:
         raise HTTPException(status_code=401, detail="Invalid token value")
-    return token
-
-def verify_a2a_headers(
-    a2a_version: Optional[str] = Header(None, alias="A2A-Version"), 
-    content_type: Optional[str] = Header(None, alias="Content-Type")
-):
-    if a2a_version != "1.0":
-        raise HTTPException(status_code=400, detail="Invalid or missing A2A-Version")
+        
+    # 3. Check Media Content Type Specification Envelope
     if content_type and "application/a2a+json" not in content_type:
         raise HTTPException(status_code=400, detail="Invalid Content-Type")
+        
+    return token
 
 def compute_message_hash(message: dict) -> str:
     """Computes a strict, key-sorted compact JSON hash of the message object only."""
@@ -65,9 +72,9 @@ def compute_message_hash(message: dict) -> str:
 def analyze_package_with_llm(package: dict, policy_revision: str) -> dict:
     package_str = json.dumps(package)
     
-    vendor_name = package.get("vendor", "Unknown Vendor")
-    invoice_number = package.get("invoiceNum", "000000")
-    amount_minor = package.get("amount", 0)
+    vendor_name = package.get("vendorName", package.get("vendor", "Unknown Vendor"))
+    invoice_number = package.get("invoiceNumber", package.get("invoiceNum", "000000"))
+    amount_minor = package.get("amountMinor", package.get("amount", 0))
     currency = package.get("currency", "INR")
     
     action = "settle_invoice" 
@@ -116,7 +123,7 @@ def analyze_package_with_llm(package: dict, policy_revision: str) -> dict:
                 with httpx.Client(timeout=10.0) as client:
                     resp = client.post(url, headers=headers, json=payload)
                     if resp.status_code == 200:
-                        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                        text = resp.json()["candidates"]["content"]["parts"]["text"]
                         res_data = json.loads(text)
                         return {
                             "action": res_data.get("action", action),
@@ -140,19 +147,19 @@ def analyze_package_with_llm(package: dict, policy_revision: str) -> dict:
         "rationale": rationale
     }
 
-# --- 1. GET DISCOVERY PATH: AGENT CARD ---
+# --- 1. GET DISCOVERY PATH: AGENT CARD (Exposed at origin-level) ---
 @app.get("/.well-known/agent-card.json", response_class=A2AJSONResponse)
 def get_agent_card():
     return A2AJSONResponse(content={
-        "name": "A2A Stateful Invoice Compliance Agent",
+        "name": "Invoice Action Auditor Agent",
         "description": "Enterprise grade batch processing and validation agent executing strict transactional safety guarantees.",
         "version": "1.0",
-        "capabilities": {"invoice_audit": True, "idempotent_execution": True},
+        "capabilities": {"invoice_audit": True},
         "skills": {
             "invoice_action_agent": {
-                "name": "Invoice Compliance Action Agent",
+                "name": "invoice_action_agent",
                 "description": "Reviews complex ledger frames and generates granular operational decisions.",
-                "tags": ["audit", "compliance", "idempotency", "stateful"]
+                "tags": ["audit", "compliance"]
             }
         },
         "supportedInterfaces": [
@@ -171,11 +178,7 @@ def get_agent_card():
 
 # --- 2. POST ROUTE: /message:send ---
 @app.post("/message:send", response_class=A2AJSONResponse)
-async def message_send(
-    request: Request,
-    principal: str = Depends(get_auth_principal),
-    _ = Depends(verify_a2a_headers)
-):
+async def message_send(request: Request, principal: str = Depends(verify_a2a_headers_and_auth)):
     body = await request.json()
     message = body.get("message")
     if not message or "messageId" not in message or "parts" not in message:
@@ -192,7 +195,3 @@ async def message_send(
             return A2AJSONResponse(status_code=409, content={"code": "IDEMPOTENCY_CONFLICT", "message": "Semantic modification detected on identical messageId."})
             
     if idempotency_key in HASH_DB:
-        task_id = HASH_DB[idempotency_key]
-        return A2AJSONResponse(content=clean_task_for_output(TASKS_DB[task_id]))
-        
-    parts = message["parts"]
