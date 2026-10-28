@@ -15,6 +15,13 @@ app = FastAPI()
 class A2AJSONResponse(JSONResponse):
     media_type = "application/a2a+json"
 
+    def __init__(self, content: Any, status_code: int = 200, headers: Optional[Dict[str, str]] = None, **kwargs):
+        if headers is None:
+            headers = {}
+        # Force the exact media type directly into the headers dictionary mapping
+        headers["Content-Type"] = "application/a2a+json"
+        super().__init__(content=content, status_code=status_code, headers=headers, **kwargs)
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     return A2AJSONResponse(
@@ -69,13 +76,11 @@ def compute_message_hash(message: dict) -> str:
 
 # --- STEP 4: CONTROLLING COMPLIANCE AUDITOR LAYER ---
 def analyze_package_with_llm(pkg: dict, policy_revision: str) -> dict:
-    # Explicitly pull all controlling facts out of the inbound invoice context payload
     vendor_name = pkg.get("vendorName", pkg.get("vendor", "Unknown Vendor"))
     invoice_number = pkg.get("invoiceNumber", pkg.get("invoiceNum", "000000"))
     amount_minor = pkg.get("amountMinor", pkg.get("amount", 0))
     currency = pkg.get("currency", "INR")
     
-    # Production-grade fallback structure mirroring absolute evidence constraints
     decision = {
         "action": "settle_invoice",
         "vendorName": str(vendor_name),
@@ -127,7 +132,7 @@ def analyze_package_with_llm(pkg: dict, policy_revision: str) -> dict:
                 with httpx.Client(timeout=10.0) as client:
                     resp = client.post(url, headers=headers, json=payload)
                     if resp.status_code == 200:
-                        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                        text = resp.json()["candidates"]["content"]["parts"]["text"]
                         res_data = json.loads(text)
                         decision["action"] = res_data.get("action", decision["action"])
                         decision["vendorName"] = res_data.get("vendorName", decision["vendorName"])
@@ -142,7 +147,7 @@ def analyze_package_with_llm(pkg: dict, policy_revision: str) -> dict:
 
     return decision
 
-# --- SKILL 1: WELL-KNOWN SYSTEM DISCOVERY (ORIGIN-LEVEL ADVERTISEMENT) ---
+# --- SKILL 1: WELL-KNOWN SYSTEM DISCOVERY ---
 @app.get("/.well-known/agent-card.json")
 def get_agent_card(request: Request):
     return A2AJSONResponse(content={
@@ -179,9 +184,4 @@ async def message_send(request: Request):
     
     message = body.get("message")
     if not message or "messageId" not in message or "parts" not in message:
-        raise HTTPException(status_code=400, detail="Malformed payload schema parameters")
-        
-    msg_id = message["messageId"]
-    msg_hash = compute_message_hash(message)
-    
-    idempotency_key = f"{principal}:{msg_id}:{msg_hash}"
+
