@@ -146,8 +146,8 @@ def analyze_package_with_llm(pkg: dict, policy_revision: str) -> dict:
 
     return decision
 
-# --- SKILL 1: WELL-KNOWN SYSTEM DISCOVERY ---
-@app.get("//.well-known/agent-card.json")
+# --- SKILL 1: WELL-KNOWN SYSTEM DISCOVERY (FIXED PATH CORRECTION) ---
+@app.get("/.well-known/agent-card.json")
 def get_agent_card(request: Request):
     return A2AJSONResponse(content={
         "name": "Invoice Action Auditor Agent",
@@ -183,5 +183,4 @@ async def message_send(request: Request):
     
     message = body.get("message")
     if not message or "messageId" not in message or "parts" not in message:
-        raise HTTPException(status_code=400, detail="Malformed payload schema parameters")
         
