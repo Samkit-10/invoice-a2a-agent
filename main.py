@@ -18,7 +18,6 @@ class A2AJSONResponse(JSONResponse):
     def __init__(self, content: Any, status_code: int = 200, headers: Optional[Dict[str, str]] = None, **kwargs):
         if headers is None:
             headers = {}
-        # Force the exact media type directly into the headers dictionary mapping
         headers["Content-Type"] = "application/a2a+json"
         super().__init__(content=content, status_code=status_code, headers=headers, **kwargs)
 
@@ -148,7 +147,7 @@ def analyze_package_with_llm(pkg: dict, policy_revision: str) -> dict:
     return decision
 
 # --- SKILL 1: WELL-KNOWN SYSTEM DISCOVERY ---
-@app.get("/.well-known/agent-card.json")
+@app.get("//.well-known/agent-card.json")
 def get_agent_card(request: Request):
     return A2AJSONResponse(content={
         "name": "Invoice Action Auditor Agent",
@@ -184,4 +183,5 @@ async def message_send(request: Request):
     
     message = body.get("message")
     if not message or "messageId" not in message or "parts" not in message:
-
+        raise HTTPException(status_code=400, detail="Malformed payload schema parameters")
+        
